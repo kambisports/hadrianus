@@ -1,0 +1,12 @@
+[Unit]
+Description=Hadrianus Load Balancer
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/hadrianus -minimumtimeinterval=14 2003 2103 2203 2303 2403 2503 2603
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
