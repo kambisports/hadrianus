@@ -23,16 +23,16 @@ func handleIncomingConnection(connection net.Conn, incomingMessageChannel chan m
 
 		// Parse incoming message and forward it, if the message format is valid
 		incomingMessage, err := parseGraphiteMessage(strings.TrimSpace(string(netData)))
-		statsCounterChannel <- statUpdate{updateType: IncrementCounter, metricPath: pathReceivedMessage}
+		writeStats(statsCounterChannel, statUpdate{updateType: IncrementCounter, metricPath: pathReceivedMessage})
 
 		if err != nil {
-			statsCounterChannel <- statUpdate{updateType: IncrementCounter, metricPath: pathInvalidMessage}
+			writeStats(statsCounterChannel, statUpdate{updateType: IncrementCounter, metricPath: pathInvalidMessage})
 		} else {
-			incomingMessageChannel <- incomingMessage
+			writeIncomingMessage(incomingMessageChannel, incomingMessage, statsCounterChannel)
 		}
 	}
-	statsCounterChannel <- statUpdate{updateType: IncrementCounter, metricPath: pathClientConnectionClosing}
-	statsCounterChannel <- statUpdate{updateType: DecrementGauge, metricPath: pathClientConnectionsActive}
+	writeStats(statsCounterChannel, statUpdate{updateType: IncrementCounter, metricPath: pathClientConnectionClosing})
+	writeStats(statsCounterChannel, statUpdate{updateType: DecrementGauge, metricPath: pathClientConnectionsActive})
 }
 
 func createIncomingConnections(incomingPort string, incomingMessageChannel chan metricMessage, statsCounterChannel chan statUpdate) {
@@ -46,8 +46,8 @@ func createIncomingConnections(incomingPort string, incomingMessageChannel chan 
 
 	for {
 		connection, err := listen.Accept()
-		statsCounterChannel <- statUpdate{updateType: IncrementCounter, metricPath: pathClientConnectionOpening}
-		statsCounterChannel <- statUpdate{updateType: IncrementGauge, metricPath: pathClientConnectionsActive}
+		writeStats(statsCounterChannel, statUpdate{updateType: IncrementCounter, metricPath: pathClientConnectionOpening})
+		writeStats(statsCounterChannel, statUpdate{updateType: IncrementGauge, metricPath: pathClientConnectionsActive})
 
 		if err != nil {
 			log.Println(err)
@@ -59,7 +59,10 @@ func createIncomingConnections(incomingPort string, incomingMessageChannel chan 
 
 func createOutgoingConnection(outgoingHostPort string, outgoingMessageChannel chan metricMessage) {
 	for {
-		connection, err := net.Dial("tcp", outgoingHostPort)
+		addr, _ := net.ResolveTCPAddr("tcp", outgoingHostPort)
+		connection, err := net.DialTCP("tcp", nil, addr)
+		connection.SetNoDelay(TcpNoDelay)
+
 		if err != nil {
 			log.Println("Failed to connect to", outgoingHostPort+":", err.Error())
 			os.Exit(1)
@@ -77,7 +80,7 @@ func createOutgoingConnection(outgoingHostPort string, outgoingMessageChannel ch
 	}
 }
 
-func handleOutgoingPool(outgoingToPoolChannel chan metricMessage, outgoingHostPort [][]string) {
+func handleOutgoingPool(outgoingToPoolChannel chan metricMessage, outgoingHostPort [][]string, statsCounterChannel chan statUpdate) {
 	var outgoingMessageChannel [][]chan metricMessage
 	messagesSent := 0
 	numberOfPools := len(outgoingHostPort)
@@ -89,16 +92,15 @@ func handleOutgoingPool(outgoingToPoolChannel chan metricMessage, outgoingHostPo
 		outgoingMessageChannel = append(outgoingMessageChannel, emptySlice)
 		for connectionInPool := 0; connectionInPool < numberOutConnections[currentPool]; connectionInPool++ {
 			outgoingMessageChannel[currentPool] = append(outgoingMessageChannel[currentPool], make(chan metricMessage, OutgoingMessageBuffer))
-			// outgoingMessageChannel[currentPool] = 23
+			outgoingMessageChannel[currentPool][connectionInPool] = make(chan metricMessage, PoolChannelBufferSize)
 			go createOutgoingConnection(outgoingHostPort[currentPool][connectionInPool], outgoingMessageChannel[currentPool][connectionInPool])
 		}
-
 	}
 
 	for {
 		fromConnection := <-outgoingToPoolChannel
 		for currentPool := 0; currentPool < numberOfPools; currentPool++ {
-			outgoingMessageChannel[currentPool][messagesSent%numberOutConnections[currentPool]] <- fromConnection
+			writeToOutConnection(outgoingMessageChannel[currentPool][messagesSent%numberOutConnections[currentPool]], fromConnection, statsCounterChannel)
 		}
 		messagesSent++
 	}
