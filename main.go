@@ -15,11 +15,10 @@ import (
 )
 
 const (
-	OutgoingMessageBuffer    = 16777216
-	IncomingMessageBuffer    = 65536
-	PoolChannelSize          = 16777216 // Was historically set to 1024
-	StatsChannelSize         = 65536
-	PoolChannelBufferSize    = 1024
+	OutgoingChannelSize      = 65536
+	IncomingChannelSize      = 65536
+	PoolChannelSize          = 65536
+	StatsChannelSize         = 32768
 	NanosecondsInMillisecond = 1000000
 	BytesInMegabyte          = 1048576
 
@@ -66,7 +65,6 @@ var (
 	pathClientConnectionClosing        string
 	pathClientConnectionsActive        string
 	pathGoroutines                     string
-	pathStatsOverflows                 string
 	pathToOutPoolOverflows             string
 	pathIncomingMessageOverflows       string
 	pathToOutConnectionOverflows       string
@@ -169,7 +167,7 @@ func main() {
 	initializeInternalMetricsPaths()
 
 	statsCounterChannel := make(chan statUpdate, StatsChannelSize)
-	incomingMessageChannel := make(chan metricMessage, IncomingMessageBuffer)
+	incomingMessageChannel := make(chan metricMessage, IncomingChannelSize)
 	outgoingToPoolChannel := make(chan metricMessage, PoolChannelSize)
 
 	// Create listener for stats channel

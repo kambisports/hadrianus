@@ -76,7 +76,6 @@ func initializeInternalMetricsPaths() {
 	pathClientConnectionClosing = `server.hadrianus.` + hostname + `.clientConnectionClosing`
 	pathClientConnectionsActive = `server.hadrianus.` + hostname + `.clientConnectionsActive`
 	pathGoroutines = `server.hadrianus.` + hostname + `.goroutines`
-	pathStatsOverflows = `server.hadrianus.` + hostname + `.statsOverflows`
 	pathToOutPoolOverflows = `server.hadrianus.` + hostname + `.toOutPoolOverflows`
 	pathIncomingMessageOverflows = `server.hadrianus.` + hostname + `.incomingMessageOverflows`
 	pathToOutConnectionOverflows = `server.hadrianus.` + hostname + `.toOutConnectionOverflows`

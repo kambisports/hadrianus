@@ -61,7 +61,11 @@ func createOutgoingConnection(outgoingHostPort string, outgoingMessageChannel ch
 	for {
 		addr, _ := net.ResolveTCPAddr("tcp", outgoingHostPort)
 		connection, err := net.DialTCP("tcp", nil, addr)
-		connection.SetNoDelay(TcpNoDelay)
+		err2 := connection.SetNoDelay(TcpNoDelay)
+		if err2 != nil {
+			log.Println("Attempt to set \"NoDelay\" failed:", err.Error())
+			os.Exit(1)
+		}
 
 		if err != nil {
 			log.Println("Failed to connect to", outgoingHostPort+":", err.Error())
@@ -91,8 +95,7 @@ func handleOutgoingPool(outgoingToPoolChannel chan metricMessage, outgoingHostPo
 		var emptySlice []chan metricMessage
 		outgoingMessageChannel = append(outgoingMessageChannel, emptySlice)
 		for connectionInPool := 0; connectionInPool < numberOutConnections[currentPool]; connectionInPool++ {
-			outgoingMessageChannel[currentPool] = append(outgoingMessageChannel[currentPool], make(chan metricMessage, OutgoingMessageBuffer))
-			outgoingMessageChannel[currentPool][connectionInPool] = make(chan metricMessage, PoolChannelBufferSize)
+			outgoingMessageChannel[currentPool] = append(outgoingMessageChannel[currentPool], make(chan metricMessage, OutgoingChannelSize))
 			go createOutgoingConnection(outgoingHostPort[currentPool][connectionInPool], outgoingMessageChannel[currentPool][connectionInPool])
 		}
 	}
