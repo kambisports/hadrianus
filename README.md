@@ -60,3 +60,85 @@ allowunmodified = true
 ```
 
 Referring to the "allowlist" file is done on the commandline by using the `-override` flag as follows: `hadrianus -override=allowlist.conf -minimumtimeinterval=14 2003 2103 2203 server01.iambk.com:2303`
+
+## Internal metrics
+
+Hadrianus (currently) exposes metrics on the path `server.hadrianus.<servername>.*`.
+
+Please note that the values of the metrics correspond to the `statstimegranularity` specified. For example: if `receivedMessage` has a value of 4.23 million, and the granularity of stats is 60 seconds, this will mean that the number of received messages per second is `4,230,000 / 60`, which equals `70,500` messages per second.
+
+### discardedChattyMessage
+
+The number of messages that have been discarded because they are coming in faster than is allowed by the `minimumtimeinterval` setting.
+
+### discardedStaleMessage
+
+The number of messages that have been discarded because they have been judged to be "stale" due to their values not changing often enough, or ever, as decided by the `maxdrymessages` setting.
+
+### discardedStaleAndChattyMessage
+
+The number of messages that have been discarded *both* because they have been judged to be stale and because they are coming in too fast.
+
+### encounteredMetricPaths
+
+The number of unique metric paths that have been encountered so far, during the running time of the service.
+
+### staleMetricPaths
+
+The number of unique metric paths that are judged to be "stale", as decided by the `maxdrymessages` setting. These messages will not be sent to the downstream metrics consumers.
+
+### garbageCollectionPauseMs
+
+The amount of time that has been spent on doing garbage collection.
+
+### garbageCollections
+
+The number of garbage collection operations that have been performed.
+
+### receivedMessage
+
+The number of messages that have been received from metrics producers.
+
+### sentMessage
+
+The number of messages that have been sent to the downstream metrics consumers after filtering and throttling operations have been applied.
+
+### invalidMessage
+
+The number of messages that have been received which do not correspond to valid Graphite wire protocol messages.
+
+### allocatedMemoryMegabytes
+
+The amount of memory allocated by the service in Megabytes.
+
+### clientConnectionOpening
+
+The number of opened TCP connections.
+
+### clientConnectionClosing
+
+The number of closed TCP connections.
+
+### clientConnectionsActive
+
+The number of currently active TCP connections.
+
+### goroutines
+
+The number of goroutines currently used. This will typically only change when the number of concurrent network connections changes.
+
+### toOutPoolOverflows
+
+The number of overflows when the output connection pool channel buffer is written to. If this goes up, it can indicate a severe performance issue.
+
+### incomingMessageOverflows
+
+The number of overflows when the incoming metrics producer channel buffer is being written to.
+
+### toOutConnectionOverflows
+
+The number of overflows when the output connection channel buffers are written to. If this goes up, it's possible that downstream metrics consumers cannot consume data fast enough.
+
+### cleanupTimeMilli
+
+The time in milliseconds that it took for the "cleanup" job to complete. This job will halt the central processing of data. If this takes a long time, it can stop the whole service and cause things to queue up.

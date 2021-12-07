@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -14,9 +15,10 @@ import (
 )
 
 const (
-	OutgoingMessageBuffer    = 65536
-	IncomingMessageBuffer    = 524288
-	PoolChannelSize          = 65536 // Was historically set to 1024
+	OutgoingChannelSize      = 65536
+	IncomingChannelSize      = 65536
+	PoolChannelSize          = 65536
+	StatsChannelSize         = 32768
 	NanosecondsInMillisecond = 1000000
 	BytesInMegabyte          = 1048576
 
@@ -27,6 +29,9 @@ const (
 	MaxConsecutiveDryMessages   = 120 // If more than this number of messages with the same value have been sent, mark as "stale"
 	IsNewMetricEnabledByDefault = false
 	StaleResendInterval         = 0
+
+	BlockOnChannelBufferFullDefault = true
+	TcpNoDelay                      = false // Disable delay of sending successive small packets
 )
 
 // Commandline flag variable definitions
@@ -59,14 +64,22 @@ var (
 	pathClientConnectionOpening        string
 	pathClientConnectionClosing        string
 	pathClientConnectionsActive        string
+	pathGoroutines                     string
+	pathToOutPoolOverflows             string
+	pathIncomingMessageOverflows       string
+	pathToOutConnectionOverflows       string
+	pathCleanupTimeMilli               string
 )
 
 var timeToCleanup = false
+
+var blockOnChannelBufferFull = BlockOnChannelBufferFullDefault
 
 type StatUpdateType int
 
 const (
 	IncrementCounter StatUpdateType = iota
+	IncreaseCounter
 	SetCounterValue
 	IncrementGauge
 	DecrementGauge
@@ -141,14 +154,22 @@ func main() {
 
 	// Process and sanity check override file argument
 	var storageSchema map[string]overrideData
+
 	if len(*override) > 0 {
 		storageSchema = getStorageSchemaFromFile(*override)
 	}
 
+	// Automatically whitelist internal hadrianus metrics
+	if len(storageSchema) == 0 {
+		storageSchema = make(map[string]overrideData)
+	}
+	internalHadrianusPattern, _ := regexp.Compile(`^server\.hadrianus\.`)
+	storageSchema[`hadrianus`] = overrideData{pattern: internalHadrianusPattern, allowUnmodifiedActive: true, allowUnmodified: true}
+
 	initializeInternalMetricsPaths()
 
-	statsCounterChannel := make(chan statUpdate, 1024)
-	incomingMessageChannel := make(chan metricMessage, IncomingMessageBuffer)
+	statsCounterChannel := make(chan statUpdate, StatsChannelSize)
+	incomingMessageChannel := make(chan metricMessage, IncomingChannelSize)
 	outgoingToPoolChannel := make(chan metricMessage, PoolChannelSize)
 
 	// Create listener for stats channel
@@ -158,7 +179,7 @@ func main() {
 	go createIncomingConnections(incomingPort, incomingMessageChannel, statsCounterChannel)
 
 	// Create outgoing pool
-	go handleOutgoingPool(outgoingToPoolChannel, outgoingHostPort)
+	go handleOutgoingPool(outgoingToPoolChannel, outgoingHostPort, statsCounterChannel)
 
 	metric := make(map[string]*metricData)
 
@@ -170,15 +191,18 @@ func main() {
 		for range time.Tick(d) {
 			// Update GC stats
 			debug.ReadGCStats(&garbageCollectionStats)
-			statsCounterChannel <- statUpdate{SetCounterValue, pathGarbageCollections, int64(garbageCollectionStats.NumGC)}
-			statsCounterChannel <- statUpdate{SetCounterValue, pathGarbageCollectionPauseMs, int64(garbageCollectionStats.PauseTotal / NanosecondsInMillisecond)}
+			writeStats(statsCounterChannel, statUpdate{SetCounterValue, pathGarbageCollections, int64(garbageCollectionStats.NumGC)})
+			writeStats(statsCounterChannel, statUpdate{SetCounterValue, pathGarbageCollectionPauseMs, int64(garbageCollectionStats.PauseTotal / NanosecondsInMillisecond)})
 
 			// Update memory stats
 			runtime.ReadMemStats(&memoryStats)
-			statsCounterChannel <- statUpdate{SetGaugeValue, pathAllocatedMemoryMegabytes, int64(memoryStats.Alloc / BytesInMegabyte)}
+			writeStats(statsCounterChannel, statUpdate{SetGaugeValue, pathAllocatedMemoryMegabytes, int64(memoryStats.Alloc / BytesInMegabyte)})
+
+			// Update goroutine stats
+			writeStats(statsCounterChannel, statUpdate{SetGaugeValue, pathGoroutines, int64(runtime.NumGoroutine())})
 
 			// Trigger generation of stats for counters
-			statsCounterChannel <- statUpdate{updateType: Generate}
+			writeStats(statsCounterChannel, statUpdate{updateType: Generate})
 		}
 	}()
 
@@ -199,7 +223,7 @@ func main() {
 
 		// Check if data for the metric path needs to be created
 		if instance, found = metric[fromConnection.metricPath]; !found {
-			statsCounterChannel <- statUpdate{IncrementGauge, pathEncounteredMetricPaths, 0}
+			writeStats(statsCounterChannel, statUpdate{IncrementGauge, pathEncounteredMetricPaths, 0})
 
 			// Initialize data for newly discovered metric
 			instance = &metricData{
@@ -211,7 +235,7 @@ func main() {
 				allowUnmodified:  false,
 			}
 			if !*isNewMetricEnabledByDefault {
-				statsCounterChannel <- statUpdate{IncrementGauge, pathStaleMetricPaths, 0}
+				writeStats(statsCounterChannel, statUpdate{IncrementGauge, pathStaleMetricPaths, 0})
 			}
 
 			// Check if the newly discovered metric path matches patterns in the override file
@@ -234,9 +258,9 @@ func main() {
 
 		// If metric path is allowUnmodified, send it out, no matter what.
 		if instance.allowUnmodified {
-			outgoingToPoolChannel <- fromConnection
+			writeToOutPool(outgoingToPoolChannel, fromConnection, statsCounterChannel)
 			instance.lastSentOut = fromConnection.timestamp
-			statsCounterChannel <- statUpdate{IncrementCounter, pathSentMessage, 0}
+			writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathSentMessage, 0})
 		} else {
 
 			// Check that the metric value hasn't gone stale
@@ -244,15 +268,15 @@ func main() {
 				instance.unchangedCounter++
 				if instance.outputActive && instance.unchangedCounter >= *maxConsecutiveDryMessages {
 					instance.outputActive = false
-					statsCounterChannel <- statUpdate{IncrementGauge, pathStaleMetricPaths, 0}
+					writeStats(statsCounterChannel, statUpdate{IncrementGauge, pathStaleMetricPaths, 0})
 				}
 			} else {
 				instance.unchangedCounter = 0
 				if !instance.outputActive {
 					instance.outputActive = true
-					statsCounterChannel <- statUpdate{DecrementGauge, pathStaleMetricPaths, 0}
+					writeStats(statsCounterChannel, statUpdate{DecrementGauge, pathStaleMetricPaths, 0})
 					// Send out previous "silenced" metric to make data nicer
-					outgoingToPoolChannel <- metricMessage{fromConnection.metricPath, instance.lastValue, instance.lastTimestamp}
+					writeToOutPool(outgoingToPoolChannel, metricMessage{fromConnection.metricPath, instance.lastValue, instance.lastTimestamp}, statsCounterChannel)
 				}
 			}
 
@@ -264,15 +288,15 @@ func main() {
 
 			// Send out metric if not stale or not chatty
 			if timeToResendStaleMessage || instance.outputActive && !chatty {
-				outgoingToPoolChannel <- fromConnection
+				writeToOutPool(outgoingToPoolChannel, fromConnection, statsCounterChannel)
 				instance.lastSentOut = fromConnection.timestamp
-				statsCounterChannel <- statUpdate{IncrementCounter, pathSentMessage, 0}
+				writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathSentMessage, 0})
 			} else if !instance.outputActive && chatty {
-				statsCounterChannel <- statUpdate{IncrementCounter, pathDiscardedStaleAndChattyMessage, 0}
+				writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathDiscardedStaleAndChattyMessage, 0})
 			} else if !instance.outputActive && !chatty {
-				statsCounterChannel <- statUpdate{IncrementCounter, pathDiscardedStaleMessage, 0}
+				writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathDiscardedStaleMessage, 0})
 			} else if instance.outputActive && chatty {
-				statsCounterChannel <- statUpdate{IncrementCounter, pathDiscardedChattyMessage, 0}
+				writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathDiscardedChattyMessage, 0})
 			}
 		}
 		instance.lastValue = fromConnection.value
@@ -281,17 +305,20 @@ func main() {
 		if timeToCleanup {
 			timeToCleanup = false // Reset the cleanup indicator
 			timeNow := time.Now().Unix()
+			beginTime := time.Now().UnixMilli()
 			for metricPath, metricData := range metric {
 				if timeNow >= (metricData.lastTimestamp + *cleanupMaxAge) {
 					// If a disabled metric is removed, decrement the number of stale
 					// metrics paths since the path doesn't exist in memory anymore
 					if !metricData.outputActive {
-						statsCounterChannel <- statUpdate{DecrementGauge, pathStaleMetricPaths, 0}
+						writeStats(statsCounterChannel, statUpdate{DecrementGauge, pathStaleMetricPaths, 0})
 					}
 					delete(metric, metricPath)
-					statsCounterChannel <- statUpdate{DecrementGauge, pathEncounteredMetricPaths, 0}
+					writeStats(statsCounterChannel, statUpdate{DecrementGauge, pathEncounteredMetricPaths, 0})
 				}
 			}
+			endTime := time.Now().UnixMilli()
+			writeStats(statsCounterChannel, statUpdate{IncreaseCounter, pathCleanupTimeMilli, endTime - beginTime})
 		}
 	}
 }

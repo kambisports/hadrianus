@@ -21,6 +21,8 @@ func statsListener(statsCounterChannel chan statUpdate, incomingMessageChannel c
 
 		if metricUpdateMessage.updateType == IncrementCounter {
 			counterStats[metricUpdateMessage.metricPath]++
+		} else if metricUpdateMessage.updateType == IncreaseCounter {
+			counterStats[metricUpdateMessage.metricPath] += metricUpdateMessage.value
 		} else if metricUpdateMessage.updateType == SetCounterValue {
 			counterStats[metricUpdateMessage.metricPath] = metricUpdateMessage.value
 		} else if metricUpdateMessage.updateType == IncrementGauge {
@@ -32,17 +34,33 @@ func statsListener(statsCounterChannel chan statUpdate, incomingMessageChannel c
 		} else if metricUpdateMessage.updateType == Generate {
 			timeStamp := time.Now().Unix()
 			for key, value := range counterStats {
+				var metricValue float64
 				if oldValue, ok := oldCounterStats[key]; ok {
 					if oldValue > 0 {
-						// Send metrics message with statistics using the graphite connection
-						incomingMessageChannel <- metricMessage{metricPath: key, value: float64(value - oldValue), timestamp: timeStamp}
+						metricValue = float64(value - oldValue)
+					} else {
+						metricValue = 0
 					}
+				} else {
+					metricValue = float64(value) // No previous value to compare with. Just output current value
 				}
+				// Send metrics message with statistics using the graphite connection
+				writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: key, value: float64(metricValue), timestamp: timeStamp}, statsCounterChannel)
 				oldCounterStats[key] = value
+
+				// Emergency error recovery mechanism in case of buffer overflows.
+				// If the "output pool buffer" overflows, this could indicate a more serious problem.
+				// Recover from this by turning off blocking buffer writes while we have buffer overflows.
+				// This means that metrics that can't be written to buffers will temporarily be dropped.
+				if (key == pathToOutPoolOverflows) && (metricValue > 0) {
+					blockOnChannelBufferFull = false
+				} else {
+					blockOnChannelBufferFull = BlockOnChannelBufferFullDefault
+				}
 			}
 			for key, value := range gaugeStats {
 				// Send metrics message with statistics using the graphite connection
-				incomingMessageChannel <- metricMessage{metricPath: key, value: float64(value), timestamp: timeStamp}
+				writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: key, value: float64(value), timestamp: timeStamp}, statsCounterChannel)
 			}
 		}
 	}
@@ -70,4 +88,9 @@ func initializeInternalMetricsPaths() {
 	pathClientConnectionOpening = `server.hadrianus.` + hostname + `.clientConnectionOpening`
 	pathClientConnectionClosing = `server.hadrianus.` + hostname + `.clientConnectionClosing`
 	pathClientConnectionsActive = `server.hadrianus.` + hostname + `.clientConnectionsActive`
+	pathGoroutines = `server.hadrianus.` + hostname + `.goroutines`
+	pathToOutPoolOverflows = `server.hadrianus.` + hostname + `.toOutPoolOverflows`
+	pathIncomingMessageOverflows = `server.hadrianus.` + hostname + `.incomingMessageOverflows`
+	pathToOutConnectionOverflows = `server.hadrianus.` + hostname + `.toOutConnectionOverflows`
+	pathCleanupTimeMilli = `server.hadrianus.` + hostname + `.cleanupTimeMilli`
 }
