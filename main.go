@@ -30,8 +30,8 @@ const (
 	IsNewMetricEnabledByDefault = false
 	StaleResendInterval         = 0
 
-	BlockOnChannelBufferFull = true
-	TcpNoDelay               = false // Disable delay of sending successive small packets
+	BlockOnChannelBufferFullDefault = true
+	TcpNoDelay                      = false // Disable delay of sending successive small packets
 )
 
 // Commandline flag variable definitions
@@ -72,6 +72,8 @@ var (
 )
 
 var timeToCleanup = false
+
+var blockOnChannelBufferFull = BlockOnChannelBufferFullDefault
 
 type StatUpdateType int
 
