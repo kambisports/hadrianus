@@ -6,64 +6,72 @@ import (
 	"time"
 )
 
-type statUpdate struct {
-	updateType StatUpdateType
-	metricPath string
-	value      int64
-}
+// Enums for counters
+type CounterId int
 
-func statsListener(statsCounterChannel chan statUpdate, incomingMessageChannel chan metricMessage) {
-	counterStats := make(map[string]int64)
-	oldCounterStats := make(map[string]int64)
-	gaugeStats := make(map[string]int64)
-	for {
-		metricUpdateMessage := <-statsCounterChannel
+const (
+	CleanupTimeMilli CounterId = iota
+	ClientConnectionClosing
+	ClientConnectionOpening
+	DiscardedChattyMessage
+	DiscardedStaleAndChattyMessage
+	DiscardedStaleMessage
+	DroppedIncomingMessages
+	DroppedOutPool
+	DroppedOutConnection
+	GarbageCollectionPauseMs
+	GarbageCollections
+	IncomingMessageOverflows
+	InvalidMessage
+	ReceivedMessage
+	SentMessage
+	ToOutConnectionOverflows
+	ToOutPoolOverflows
+)
 
-		if metricUpdateMessage.updateType == IncrementCounter {
-			counterStats[metricUpdateMessage.metricPath]++
-		} else if metricUpdateMessage.updateType == IncreaseCounter {
-			counterStats[metricUpdateMessage.metricPath] += metricUpdateMessage.value
-		} else if metricUpdateMessage.updateType == SetCounterValue {
-			counterStats[metricUpdateMessage.metricPath] = metricUpdateMessage.value
-		} else if metricUpdateMessage.updateType == IncrementGauge {
-			gaugeStats[metricUpdateMessage.metricPath]++
-		} else if metricUpdateMessage.updateType == DecrementGauge {
-			gaugeStats[metricUpdateMessage.metricPath]--
-		} else if metricUpdateMessage.updateType == SetGaugeValue {
-			gaugeStats[metricUpdateMessage.metricPath] = metricUpdateMessage.value
-		} else if metricUpdateMessage.updateType == Generate {
-			timeStamp := time.Now().Unix()
-			for key, value := range counterStats {
-				var metricValue float64
-				if oldValue, ok := oldCounterStats[key]; ok {
-					if oldValue > 0 {
-						metricValue = float64(value - oldValue)
-					} else {
-						metricValue = 0
-					}
-				} else {
-					metricValue = float64(value) // No previous value to compare with. Just output current value
-				}
-				// Send metrics message with statistics using the graphite connection
-				writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: key, value: float64(metricValue), timestamp: timeStamp}, statsCounterChannel)
-				oldCounterStats[key] = value
+var counterData [ToOutPoolOverflows + 1]int64
+var oldCounterData [ToOutPoolOverflows + 1]int64
+var counterPath [ToOutPoolOverflows + 1]string
 
-				// Emergency error recovery mechanism in case of buffer overflows.
-				// If the "output pool buffer" overflows, this could indicate a more serious problem.
-				// Recover from this by turning off blocking buffer writes while we have buffer overflows.
-				// This means that metrics that can't be written to buffers will temporarily be dropped.
-				if (key == pathToOutPoolOverflows) && (metricValue > 0) {
-					blockOnChannelBufferFull = false
-				} else {
-					blockOnChannelBufferFull = BlockOnChannelBufferFullDefault
-				}
-			}
-			for key, value := range gaugeStats {
-				// Send metrics message with statistics using the graphite connection
-				writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: key, value: float64(value), timestamp: timeStamp}, statsCounterChannel)
-			}
+// Enums for gauges
+type GaugeId int
+
+const (
+	AllocatedMemoryMegabytes GaugeId = iota
+	ClientConnectionsActive
+	EncounteredMetricPaths
+	Goroutines
+	StaleMetricPaths
+)
+
+var gaugeData [StaleMetricPaths + 1]int64
+var gaugePath [StaleMetricPaths + 1]string
+
+var timesStatsGenerated int64
+
+func generateInternalStats(incomingMessageChannel chan metricMessage) {
+	timeStamp := time.Now().Unix()
+	for key, value := range counterData {
+		var metricValue float64
+		oldValue := oldCounterData[key]
+
+		if timesStatsGenerated < 1 {
+			metricValue = float64(value)
+		} else if oldValue > 0 {
+			metricValue = float64(value - oldValue)
+		} else {
+			metricValue = 0
 		}
+
+		// Send metrics message with statistics using the graphite connection
+		writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: baseMetricsPath + counterPath[key], value: float64(metricValue), timestamp: timeStamp})
+		oldCounterData[key] = value
 	}
+	for key, value := range gaugeData {
+		// Send metrics message with statistics using the graphite connection
+		writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: baseMetricsPath + gaugePath[key], value: float64(value), timestamp: timeStamp})
+	}
+	timesStatsGenerated++
 }
 
 func initializeInternalMetricsPaths() {
@@ -74,23 +82,32 @@ func initializeInternalMetricsPaths() {
 		os.Exit(1)
 		return
 	}
-	pathDiscardedChattyMessage = `server.hadrianus.` + hostname + `.discardedChattyMessage`
-	pathDiscardedStaleAndChattyMessage = `server.hadrianus.` + hostname + `.discardedStaleAndChattyMessage`
-	pathDiscardedStaleMessage = `server.hadrianus.` + hostname + `.discardedStaleMessage`
-	pathEncounteredMetricPaths = `server.hadrianus.` + hostname + `.encounteredMetricPaths`
-	pathGarbageCollectionPauseMs = `server.hadrianus.` + hostname + `.garbageCollectionPauseMs`
-	pathGarbageCollections = `server.hadrianus.` + hostname + `.garbageCollections`
-	pathSentMessage = `server.hadrianus.` + hostname + `.sentMessage`
-	pathStaleMetricPaths = `server.hadrianus.` + hostname + `.staleMetricPaths`
-	pathInvalidMessage = `server.hadrianus.` + hostname + `.invalidMessage`
-	pathReceivedMessage = `server.hadrianus.` + hostname + `.receivedMessage`
-	pathAllocatedMemoryMegabytes = `server.hadrianus.` + hostname + `.allocatedMemoryMegabytes`
-	pathClientConnectionOpening = `server.hadrianus.` + hostname + `.clientConnectionOpening`
-	pathClientConnectionClosing = `server.hadrianus.` + hostname + `.clientConnectionClosing`
-	pathClientConnectionsActive = `server.hadrianus.` + hostname + `.clientConnectionsActive`
-	pathGoroutines = `server.hadrianus.` + hostname + `.goroutines`
-	pathToOutPoolOverflows = `server.hadrianus.` + hostname + `.toOutPoolOverflows`
-	pathIncomingMessageOverflows = `server.hadrianus.` + hostname + `.incomingMessageOverflows`
-	pathToOutConnectionOverflows = `server.hadrianus.` + hostname + `.toOutConnectionOverflows`
-	pathCleanupTimeMilli = `server.hadrianus.` + hostname + `.cleanupTimeMilli`
+	baseMetricsPath = `server.hadrianus.` + hostname + `.`
+
+	counterPath = [ToOutPoolOverflows + 1]string{
+		`cleanupTimeMilli`,
+		`clientConnectionClosing`,
+		`clientConnectionOpening`,
+		`discardedChattyMessage`,
+		`discardedStaleAndChattyMessage`,
+		`discardedStaleMessage`,
+		`droppedIncomingMessages`,
+		`droppedOutPool`,
+		`droppedOutConnection`,
+		`garbageCollectionPauseMs`,
+		`garbageCollections`,
+		`incomingMessageOverflows`,
+		`invalidMessage`,
+		`receivedMessage`,
+		`sentMessage`,
+		`toOutConnectionOverflows`,
+		`toOutPoolOverflows`,
+	}
+	gaugePath = [StaleMetricPaths + 1]string{
+		`allocatedMemoryMegabytes`,
+		`clientConnectionsActive`,
+		`encounteredMetricPaths`,
+		`goroutines`,
+		`staleMetricPaths`,
+	}
 }
