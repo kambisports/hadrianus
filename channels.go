@@ -3,47 +3,59 @@ package main
 // Break out channel writes into separate functions.
 // This is done to simplify handling of channel buffers.
 
-func writeStats(statsCounterChannel chan statUpdate, update statUpdate) {
-	select {
-	case statsCounterChannel <- update:
-	default:
-		if blockOnChannelBufferFull {
-			statsCounterChannel <- update
-		}
-	}
-}
-
-func writeToOutPool(outgoingToPoolChannel chan metricMessage, update metricMessage, statsCounterChannel chan statUpdate) {
+func writeToOutPool(outgoingToPoolChannel chan metricMessage, update metricMessage) {
 	select {
 	case outgoingToPoolChannel <- update:
+
+		// Restore normal blocking behavior
+		outPoolOverflows = 0
+		blockOnChannelBufferFull = BlockOnChannelBufferFullDefault
+		channelBufferMetricsEnabled = true // Resume buffer overflow message generation
 	default:
-		writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathToOutPoolOverflows, 0})
+		if channelBufferMetricsEnabled {
+			counterData[ToOutPoolOverflows]++
+		}
 		if blockOnChannelBufferFull {
 			outgoingToPoolChannel <- update
+		} else {
+			counterData[DroppedOutPool]++
+		}
+
+		// If number of overflows of the "out pool" exceeds threshold, stop blocking and discard data
+		outPoolOverflows++
+		if outPoolOverflows > OverflowsThreshold {
+			blockOnChannelBufferFull = false
+			channelBufferMetricsEnabled = false // Stop buffer overflow messages temporarily to lessen load
 		}
 	}
 }
 
-func writeIncomingMessage(incomingMessageChannel chan metricMessage, update metricMessage, statsCounterChannel chan statUpdate) {
+func writeIncomingMessage(incomingMessageChannel chan metricMessage, update metricMessage) {
 	select {
 	case incomingMessageChannel <- update:
 	default:
-		writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathIncomingMessageOverflows, 0})
+		if channelBufferMetricsEnabled {
+			counterData[IncomingMessageOverflows]++
+		}
 		if blockOnChannelBufferFull {
-			// Blocking on incoming data could be a stability problem.
-			// Since most of the incoming data is filtered away, dropping these messages would have the least impact.
 			incomingMessageChannel <- update
+		} else {
+			counterData[DroppedIncomingMessages]++
 		}
 	}
 }
 
-func writeToOutConnection(outgoingToPoolChannel chan metricMessage, update metricMessage, statsCounterChannel chan statUpdate) {
+func writeToOutConnection(outgoingToPoolChannel chan metricMessage, update metricMessage) {
 	select {
 	case outgoingToPoolChannel <- update:
 	default:
-		writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathToOutConnectionOverflows, 0})
+		if channelBufferMetricsEnabled {
+			counterData[ToOutConnectionOverflows]++
+		}
 		if blockOnChannelBufferFull {
 			outgoingToPoolChannel <- update
+		} else {
+			counterData[DroppedOutConnection]++
 		}
 	}
 }

@@ -12,9 +12,11 @@ import (
 	"strings"
 )
 
-func handleIncomingConnection(connection net.Conn, incomingMessageChannel chan metricMessage, statsCounterChannel chan statUpdate) {
+func handleIncomingConnection(connection net.Conn, incomingMessageChannel chan metricMessage) {
 	defer connection.Close()
 	reader := bufio.NewReader(connection)
+	counterData[ClientConnectionOpening]++
+	gaugeData[ClientConnectionsActive]++
 	for {
 		netData, err := reader.ReadString('\n')
 		if err != nil {
@@ -23,19 +25,19 @@ func handleIncomingConnection(connection net.Conn, incomingMessageChannel chan m
 
 		// Parse incoming message and forward it, if the message format is valid
 		incomingMessage, err := parseGraphiteMessage(strings.TrimSpace(string(netData)))
-		writeStats(statsCounterChannel, statUpdate{updateType: IncrementCounter, metricPath: pathReceivedMessage})
+		counterData[ReceivedMessage]++
 
 		if err != nil {
-			writeStats(statsCounterChannel, statUpdate{updateType: IncrementCounter, metricPath: pathInvalidMessage})
+			counterData[InvalidMessage]++
 		} else {
-			writeIncomingMessage(incomingMessageChannel, incomingMessage, statsCounterChannel)
+			writeIncomingMessage(incomingMessageChannel, incomingMessage)
 		}
 	}
-	writeStats(statsCounterChannel, statUpdate{updateType: IncrementCounter, metricPath: pathClientConnectionClosing})
-	writeStats(statsCounterChannel, statUpdate{updateType: DecrementGauge, metricPath: pathClientConnectionsActive})
+	counterData[ClientConnectionClosing]++
+	gaugeData[ClientConnectionsActive]--
 }
 
-func createIncomingConnections(incomingPort string, incomingMessageChannel chan metricMessage, statsCounterChannel chan statUpdate) {
+func createIncomingConnections(incomingPort string, incomingMessageChannel chan metricMessage) {
 	listen, err := net.Listen("tcp4", ":"+incomingPort)
 	if err != nil {
 		log.Println(err)
@@ -46,14 +48,12 @@ func createIncomingConnections(incomingPort string, incomingMessageChannel chan 
 
 	for {
 		connection, err := listen.Accept()
-		writeStats(statsCounterChannel, statUpdate{updateType: IncrementCounter, metricPath: pathClientConnectionOpening})
-		writeStats(statsCounterChannel, statUpdate{updateType: IncrementGauge, metricPath: pathClientConnectionsActive})
 
 		if err != nil {
 			log.Println(err)
 			os.Exit(1)
 		}
-		go handleIncomingConnection(connection, incomingMessageChannel, statsCounterChannel)
+		go handleIncomingConnection(connection, incomingMessageChannel)
 	}
 }
 
@@ -84,7 +84,7 @@ func createOutgoingConnection(outgoingHostPort string, outgoingMessageChannel ch
 	}
 }
 
-func handleOutgoingPool(outgoingToPoolChannel chan metricMessage, outgoingHostPort [][]string, statsCounterChannel chan statUpdate) {
+func handleOutgoingPool(outgoingToPoolChannel chan metricMessage, outgoingHostPort [][]string) {
 	var outgoingMessageChannel [][]chan metricMessage
 	messagesSent := 0
 	numberOfPools := len(outgoingHostPort)
@@ -103,7 +103,7 @@ func handleOutgoingPool(outgoingToPoolChannel chan metricMessage, outgoingHostPo
 	for {
 		fromConnection := <-outgoingToPoolChannel
 		for currentPool := 0; currentPool < numberOfPools; currentPool++ {
-			writeToOutConnection(outgoingMessageChannel[currentPool][messagesSent%numberOutConnections[currentPool]], fromConnection, statsCounterChannel)
+			writeToOutConnection(outgoingMessageChannel[currentPool][messagesSent%numberOutConnections[currentPool]], fromConnection)
 		}
 		messagesSent++
 	}

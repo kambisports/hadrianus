@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	OutgoingChannelSize      = 65536
-	IncomingChannelSize      = 65536
-	PoolChannelSize          = 65536
-	StatsChannelSize         = 32768
+	OutgoingChannelSize = 65536
+	IncomingChannelSize = 65536
+	PoolChannelSize     = 65536
+
 	NanosecondsInMillisecond = 1000000
 	BytesInMegabyte          = 1048576
 
@@ -32,6 +32,7 @@ const (
 
 	BlockOnChannelBufferFullDefault = true
 	TcpNoDelay                      = false // Disable delay of sending successive small packets
+	OverflowsThreshold              = 10    // When more than this number of consecutive overflows have occured, discard data to queues
 )
 
 // Commandline flag variable definitions
@@ -48,44 +49,14 @@ var (
 	override                    = flag.String("override", "", "filename for override file")
 )
 
-// Internal hadrianus metrics paths
-var (
-	pathDiscardedChattyMessage         string
-	pathDiscardedStaleAndChattyMessage string
-	pathDiscardedStaleMessage          string
-	pathEncounteredMetricPaths         string
-	pathGarbageCollectionPauseMs       string
-	pathGarbageCollections             string
-	pathSentMessage                    string
-	pathStaleMetricPaths               string
-	pathInvalidMessage                 string
-	pathReceivedMessage                string
-	pathAllocatedMemoryMegabytes       string
-	pathClientConnectionOpening        string
-	pathClientConnectionClosing        string
-	pathClientConnectionsActive        string
-	pathGoroutines                     string
-	pathToOutPoolOverflows             string
-	pathIncomingMessageOverflows       string
-	pathToOutConnectionOverflows       string
-	pathCleanupTimeMilli               string
-)
-
 var timeToCleanup = false
 
+// Variables related to critical queue full functionality
 var blockOnChannelBufferFull = BlockOnChannelBufferFullDefault
+var channelBufferMetricsEnabled = true
+var outPoolOverflows = 0
 
-type StatUpdateType int
-
-const (
-	IncrementCounter StatUpdateType = iota
-	IncreaseCounter
-	SetCounterValue
-	IncrementGauge
-	DecrementGauge
-	SetGaugeValue
-	Generate
-)
+var baseMetricsPath string
 
 type metricMessage struct {
 	metricPath string
@@ -168,18 +139,14 @@ func main() {
 
 	initializeInternalMetricsPaths()
 
-	statsCounterChannel := make(chan statUpdate, StatsChannelSize)
 	incomingMessageChannel := make(chan metricMessage, IncomingChannelSize)
 	outgoingToPoolChannel := make(chan metricMessage, PoolChannelSize)
 
-	// Create listener for stats channel
-	go statsListener(statsCounterChannel, incomingMessageChannel)
-
 	// Create listening socket
-	go createIncomingConnections(incomingPort, incomingMessageChannel, statsCounterChannel)
+	go createIncomingConnections(incomingPort, incomingMessageChannel)
 
 	// Create outgoing pool
-	go handleOutgoingPool(outgoingToPoolChannel, outgoingHostPort, statsCounterChannel)
+	go handleOutgoingPool(outgoingToPoolChannel, outgoingHostPort)
 
 	metric := make(map[string]*metricData)
 
@@ -191,18 +158,18 @@ func main() {
 		for range time.Tick(d) {
 			// Update GC stats
 			debug.ReadGCStats(&garbageCollectionStats)
-			writeStats(statsCounterChannel, statUpdate{SetCounterValue, pathGarbageCollections, int64(garbageCollectionStats.NumGC)})
-			writeStats(statsCounterChannel, statUpdate{SetCounterValue, pathGarbageCollectionPauseMs, int64(garbageCollectionStats.PauseTotal / NanosecondsInMillisecond)})
+			counterData[GarbageCollections] = garbageCollectionStats.NumGC
+			counterData[GarbageCollectionPauseMs] = int64(garbageCollectionStats.PauseTotal / NanosecondsInMillisecond)
 
 			// Update memory stats
 			runtime.ReadMemStats(&memoryStats)
-			writeStats(statsCounterChannel, statUpdate{SetGaugeValue, pathAllocatedMemoryMegabytes, int64(memoryStats.Alloc / BytesInMegabyte)})
+			gaugeData[AllocatedMemoryMegabytes] = int64(memoryStats.Alloc / BytesInMegabyte)
 
 			// Update goroutine stats
-			writeStats(statsCounterChannel, statUpdate{SetGaugeValue, pathGoroutines, int64(runtime.NumGoroutine())})
+			gaugeData[Goroutines] = int64(runtime.NumGoroutine())
 
 			// Trigger generation of stats for counters
-			writeStats(statsCounterChannel, statUpdate{updateType: Generate})
+			generateInternalStats(incomingMessageChannel)
 		}
 	}()
 
@@ -223,7 +190,7 @@ func main() {
 
 		// Check if data for the metric path needs to be created
 		if instance, found = metric[fromConnection.metricPath]; !found {
-			writeStats(statsCounterChannel, statUpdate{IncrementGauge, pathEncounteredMetricPaths, 0})
+			gaugeData[EncounteredMetricPaths]++
 
 			// Initialize data for newly discovered metric
 			instance = &metricData{
@@ -235,7 +202,7 @@ func main() {
 				allowUnmodified:  false,
 			}
 			if !*isNewMetricEnabledByDefault {
-				writeStats(statsCounterChannel, statUpdate{IncrementGauge, pathStaleMetricPaths, 0})
+				gaugeData[StaleMetricPaths]++
 			}
 
 			// Check if the newly discovered metric path matches patterns in the override file
@@ -258,25 +225,24 @@ func main() {
 
 		// If metric path is allowUnmodified, send it out, no matter what.
 		if instance.allowUnmodified {
-			writeToOutPool(outgoingToPoolChannel, fromConnection, statsCounterChannel)
+			writeToOutPool(outgoingToPoolChannel, fromConnection)
 			instance.lastSentOut = fromConnection.timestamp
-			writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathSentMessage, 0})
+			counterData[SentMessage]++
 		} else {
-
 			// Check that the metric value hasn't gone stale
 			if fromConnection.value == instance.lastValue {
 				instance.unchangedCounter++
 				if instance.outputActive && instance.unchangedCounter >= *maxConsecutiveDryMessages {
 					instance.outputActive = false
-					writeStats(statsCounterChannel, statUpdate{IncrementGauge, pathStaleMetricPaths, 0})
+					gaugeData[StaleMetricPaths]++
 				}
 			} else {
 				instance.unchangedCounter = 0
 				if !instance.outputActive {
 					instance.outputActive = true
-					writeStats(statsCounterChannel, statUpdate{DecrementGauge, pathStaleMetricPaths, 0})
+					gaugeData[StaleMetricPaths]--
 					// Send out previous "silenced" metric to make data nicer
-					writeToOutPool(outgoingToPoolChannel, metricMessage{fromConnection.metricPath, instance.lastValue, instance.lastTimestamp}, statsCounterChannel)
+					writeToOutPool(outgoingToPoolChannel, metricMessage{fromConnection.metricPath, instance.lastValue, instance.lastTimestamp})
 				}
 			}
 
@@ -288,15 +254,15 @@ func main() {
 
 			// Send out metric if not stale or not chatty
 			if timeToResendStaleMessage || instance.outputActive && !chatty {
-				writeToOutPool(outgoingToPoolChannel, fromConnection, statsCounterChannel)
+				writeToOutPool(outgoingToPoolChannel, fromConnection)
 				instance.lastSentOut = fromConnection.timestamp
-				writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathSentMessage, 0})
+				counterData[SentMessage]++
 			} else if !instance.outputActive && chatty {
-				writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathDiscardedStaleAndChattyMessage, 0})
+				counterData[DiscardedStaleAndChattyMessage]++
 			} else if !instance.outputActive && !chatty {
-				writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathDiscardedStaleMessage, 0})
+				counterData[DiscardedStaleMessage]++
 			} else if instance.outputActive && chatty {
-				writeStats(statsCounterChannel, statUpdate{IncrementCounter, pathDiscardedChattyMessage, 0})
+				counterData[DiscardedChattyMessage]++
 			}
 		}
 		instance.lastValue = fromConnection.value
@@ -311,14 +277,14 @@ func main() {
 					// If a disabled metric is removed, decrement the number of stale
 					// metrics paths since the path doesn't exist in memory anymore
 					if !metricData.outputActive {
-						writeStats(statsCounterChannel, statUpdate{DecrementGauge, pathStaleMetricPaths, 0})
+						gaugeData[StaleMetricPaths]--
 					}
 					delete(metric, metricPath)
-					writeStats(statsCounterChannel, statUpdate{DecrementGauge, pathEncounteredMetricPaths, 0})
+					gaugeData[EncounteredMetricPaths]--
 				}
 			}
 			endTime := time.Now().UnixMilli()
-			writeStats(statsCounterChannel, statUpdate{IncreaseCounter, pathCleanupTimeMilli, endTime - beginTime})
+			counterData[CleanupTimeMilli] += endTime - beginTime
 		}
 	}
 }
