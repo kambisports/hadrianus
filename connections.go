@@ -15,6 +15,8 @@ import (
 func handleIncomingConnection(connection net.Conn, incomingMessageChannel chan metricMessage) {
 	defer connection.Close()
 	reader := bufio.NewReader(connection)
+	counterData[ClientConnectionOpening]++
+	gaugeData[ClientConnectionsActive]++
 	for {
 		netData, err := reader.ReadString('\n')
 		if err != nil {
@@ -46,8 +48,6 @@ func createIncomingConnections(incomingPort string, incomingMessageChannel chan 
 
 	for {
 		connection, err := listen.Accept()
-		counterData[ClientConnectionOpening]++
-		gaugeData[ClientConnectionsActive]++
 
 		if err != nil {
 			log.Println(err)
