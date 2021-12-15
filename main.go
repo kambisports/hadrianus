@@ -23,8 +23,8 @@ const (
 	BytesInMegabyte          = 1048576
 
 	StatsTimeGranularity        = 60
-	CleanupTimeGranularity      = 601
-	CleanupMaxAge               = 3600
+	CleanupTimeGranularity      = 86401
+	CleanupMaxAge               = 86400
 	MinimumTimeInterval         = 14
 	MaxConsecutiveDryMessages   = 120 // If more than this number of messages with the same value have been sent, mark as "stale"
 	IsNewMetricEnabledByDefault = false
