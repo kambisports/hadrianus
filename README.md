@@ -25,9 +25,10 @@ As a convenience there's a small `Makefile`. To build:
 ### Options
 
 * `-cleanupmaxage` Maximum time in seconds since last message before metric path is removed from memory.
-* `-cleanuptimegranularity` Seconds between memory cleanup events (default 601)
+* `-cleanuptimegranularity` Seconds between memory cleanup events (default 86401).
 * `-enablenewmetrics` Initially enable new metrics and block them later if needed.
-* `-maxdrymessages` Maximum allowed consecutive identical values before marking metric as stale.
+* `-maxdrymessages` Maximum allowed consecutive identical values before marking metric as stale. Only meaningful if `-enablenewmetrics` is used.
+* `-maxdrylimit` Maximum number of messages that dry threshold may be increased to.
 * `-minimumtimeinterval` Minimum allowed time interval between incoming metrics in seconds. Lower values makes hadrianus more "generous" in how often applications may send a specific metric.
 * `-mirrordestination` Secondary destination(s) to mirror traffic to.
 * `-override` Filename for per-path override file that allows allowlisting.
