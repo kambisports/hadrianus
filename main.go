@@ -26,7 +26,8 @@ const (
 	CleanupTimeGranularity      = 86401
 	CleanupMaxAge               = 86400
 	MinimumTimeInterval         = 14
-	MaxConsecutiveDryMessages   = 120 // If more than this number of messages with the same value have been sent, mark as "stale"
+	MaxConsecutiveDryMessages   = 120   // If more than this number of messages with the same value have been sent, mark as "stale"
+	MaxDryLimit                 = 21600 // The maximum number of messages that dry threshold may be increased to
 	IsNewMetricEnabledByDefault = false
 	StaleResendInterval         = 0
 
@@ -40,7 +41,8 @@ var (
 	isNewMetricEnabledByDefault = flag.Bool("enablenewmetrics", IsNewMetricEnabledByDefault, "initially enable new metrics")
 	minimumTimeInterval         = flag.Int64("minimumtimeinterval", MinimumTimeInterval, "minimum allowed time interval between incoming metrics in seconds")
 	statsTimeGranularity        = flag.Int64("statstimegranularity", StatsTimeGranularity, "time between statistics messages in seconds")
-	maxConsecutiveDryMessages   = flag.Uint64("maxdrymessages", MaxConsecutiveDryMessages, "maximum allowed consecutive identical values before marking metric as stale")
+	maxConsecutiveDryMessages   = flag.Uint64("maxdrymessages", MaxConsecutiveDryMessages, "maximum allowed consecutive identical values before marking metric as stale. no impact unless -enablenewmetrics is used")
+	maxDryLimit                 = flag.Uint64("maxdrylimit", MaxDryLimit, "the maximum number of messages that dry threshold may be increased to")
 	staleResendInterval         = flag.Int64("staleresendinterval", StaleResendInterval, "time after which stale messages are resent in seconds")
 	mirrorDestination           = flag.String("mirrordestination", "", "secondary destinations to mirror traffic to")
 	tertiaryDestination         = flag.String("tertiarydestination", "", "tertiary destinations to mirror traffic to")
@@ -69,6 +71,7 @@ type metricData struct {
 	lastValue        float64
 	lastSentOut      int64
 	lastTimestamp    int64
+	consecutiveDry   uint64
 	outputActive     bool
 	allowUnmodified  bool // Pass metric through as-is, no matter what?
 }
@@ -200,6 +203,7 @@ func main() {
 				lastSentOut:      fromConnection.timestamp - *minimumTimeInterval,
 				lastTimestamp:    fromConnection.timestamp,
 				allowUnmodified:  false,
+				consecutiveDry:   *maxConsecutiveDryMessages,
 			}
 			if !*isNewMetricEnabledByDefault {
 				gaugeData[StaleMetricPaths]++
@@ -232,18 +236,25 @@ func main() {
 			// Check that the metric value hasn't gone stale
 			if fromConnection.value == instance.lastValue {
 				instance.unchangedCounter++
-				if instance.outputActive && instance.unchangedCounter >= *maxConsecutiveDryMessages {
+				if instance.outputActive && instance.unchangedCounter >= instance.consecutiveDry {
 					instance.outputActive = false
 					gaugeData[StaleMetricPaths]++
 				}
 			} else {
-				instance.unchangedCounter = 0
 				if !instance.outputActive {
+					if instance.unchangedCounter > instance.consecutiveDry {
+						if instance.unchangedCounter > *maxDryLimit {
+							instance.consecutiveDry = *maxDryLimit
+						} else {
+							instance.consecutiveDry = instance.unchangedCounter
+						}
+					}
 					instance.outputActive = true
 					gaugeData[StaleMetricPaths]--
 					// Send out previous "silenced" metric to make data nicer
 					writeToOutPool(outgoingToPoolChannel, metricMessage{fromConnection.metricPath, instance.lastValue, instance.lastTimestamp})
 				}
+				instance.unchangedCounter = 0
 			}
 
 			// Check that the metric doesn't come in too often
