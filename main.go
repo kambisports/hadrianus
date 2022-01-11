@@ -26,8 +26,8 @@ const (
 	CleanupTimeGranularity      = 86401
 	CleanupMaxAge               = 86400
 	MinimumTimeInterval         = 14
-	MaxConsecutiveDryMessages   = 120   // If more than this number of messages with the same value have been sent, mark as "stale"
-	MaxDryLimit                 = 21600 // The maximum number of messages that dry threshold may be increased to
+	MaxConsecutiveDryMessages   = 120    // If more than this number of messages with the same value have been sent, mark as "stale"
+	MaxDryLimit                 = 172800 // The maximum number of messages that dry threshold may be increased to
 	IsNewMetricEnabledByDefault = false
 	StaleResendInterval         = 0
 
