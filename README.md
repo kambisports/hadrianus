@@ -38,9 +38,14 @@ As a convenience there's a small `Makefile`. To build:
 
 ## What
 
-A newline delimited graphite message works like this: `metric_path value timestamp\n`. The number of messages can be limited per metric path for a time period. For example, setting a `timelimit` of 60 would result in a message only being transmitted once per minute, or more seldom.
+Hadrianus can reduce the total number of metrics, and save significant amounts of storage and network capacity by limiting:
 
-This can be useful to increase stability and reliability if you have applications producing more messages than the graphite/carbon system can handle.
+* How often the value of a metric path is allowed to be sent.
+* How many times the value of a metric path is allowed to be unchanged.
+
+For example, setting a `timelimit` of 60 would result in a message only being transmitted once per minute, or more seldom.
+
+These techniques can also increase the stability and reliability of an under dimensioned graphite/carbon system.
 
 ## Example commandline usage
 
