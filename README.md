@@ -25,9 +25,10 @@ As a convenience there's a small `Makefile`. To build:
 ### Options
 
 * `-cleanupmaxage` Maximum time in seconds since last message before metric path is removed from memory.
-* `-cleanuptimegranularity` Seconds between memory cleanup events (default 601)
+* `-cleanuptimegranularity` Seconds between memory cleanup events (default 86401).
 * `-enablenewmetrics` Initially enable new metrics and block them later if needed.
-* `-maxdrymessages` Maximum allowed consecutive identical values before marking metric as stale.
+* `-maxdrymessages` Maximum allowed consecutive identical values before marking metric as stale. Only meaningful if `-enablenewmetrics` is used.
+* `-maxdrylimit` Maximum number of messages that dry threshold may be increased to.
 * `-minimumtimeinterval` Minimum allowed time interval between incoming metrics in seconds. Lower values makes hadrianus more "generous" in how often applications may send a specific metric.
 * `-mirrordestination` Secondary destination(s) to mirror traffic to.
 * `-override` Filename for per-path override file that allows allowlisting.
@@ -37,9 +38,14 @@ As a convenience there's a small `Makefile`. To build:
 
 ## What
 
-A newline delimited graphite message works like this: `metric_path value timestamp\n`. The number of messages can be limited per metric path for a time period. For example, setting a `timelimit` of 60 would result in a message only being transmitted once per minute, or more seldom.
+Hadrianus can reduce the total number of metrics, and save significant amounts of storage and network capacity by limiting:
 
-This can be useful to increase stability and reliability if you have applications producing more messages than the graphite/carbon system can handle.
+* How often the value of a metric path is allowed to be sent.
+* How many times the value of a metric path is allowed to be unchanged.
+
+For example, setting a `timelimit` of 60 would result in a message only being transmitted once per minute, or more seldom.
+
+These techniques can also increase the stability and reliability of an under dimensioned graphite/carbon system.
 
 ## Example commandline usage
 
