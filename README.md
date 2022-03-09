@@ -27,6 +27,7 @@ As a convenience there's a small `Makefile`. To build:
 * `-cleanupmaxage` Maximum time in seconds since last message before metric path is removed from memory.
 * `-cleanuptimegranularity` Seconds between memory cleanup events (default 86401).
 * `-enablenewmetrics` Initially enable new metrics and block them later if needed.
+* `-internalmetricpath` Go template specifying the path for internal metrics (default `"server.hadrianus.{{ .Host}}.{{ .Metric}}"`)
 * `-maxdrymessages` Maximum allowed consecutive identical values before marking metric as stale. Only meaningful if `-enablenewmetrics` is used.
 * `-maxdrylimit` Maximum number of messages that dry threshold may be increased to.
 * `-minimumtimeinterval` Minimum allowed time interval between incoming metrics in seconds. Lower values makes hadrianus more "generous" in how often applications may send a specific metric.
