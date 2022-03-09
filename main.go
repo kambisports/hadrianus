@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// Default values
 const (
 	OutgoingChannelSize = 65536
 	IncomingChannelSize = 65536
@@ -34,6 +35,8 @@ const (
 	BlockOnChannelBufferFullDefault = true
 	TcpNoDelay                      = false // Disable delay of sending successive small packets
 	OverflowsThreshold              = 10    // When more than this number of consecutive overflows have occured, discard data to queues
+
+	InternalMetricPath = `server.hadrianus.{{ .Host}}.{{ .Metric}}`
 )
 
 // Commandline flag variable definitions
@@ -49,6 +52,7 @@ var (
 	cleanupTimeGranularity      = flag.Int64("cleanuptimegranularity", CleanupTimeGranularity, "seconds between cleanup events")
 	cleanupMaxAge               = flag.Int64("cleanupmaxage", CleanupMaxAge, "maximum time in seconds since last message")
 	override                    = flag.String("override", "", "filename for override file")
+	internalMetricPath          = flag.String("internalmetricpath", InternalMetricPath, "go template specifying the path for internal metrics")
 )
 
 var timeToCleanup = false
@@ -57,8 +61,6 @@ var timeToCleanup = false
 var blockOnChannelBufferFull = BlockOnChannelBufferFullDefault
 var channelBufferMetricsEnabled = true
 var outPoolOverflows = 0
-
-var baseMetricsPath string
 
 type metricMessage struct {
 	metricPath string
@@ -74,6 +76,11 @@ type metricData struct {
 	consecutiveDry   uint64
 	outputActive     bool
 	allowUnmodified  bool // Pass metric through as-is, no matter what?
+}
+
+type TemplateData struct {
+	Host   string
+	Metric string
 }
 
 func main() {
@@ -140,7 +147,7 @@ func main() {
 	internalHadrianusPattern, _ := regexp.Compile(`^server\.hadrianus\.`)
 	storageSchema[`hadrianus`] = overrideData{pattern: internalHadrianusPattern, allowUnmodifiedActive: true, allowUnmodified: true}
 
-	initializeInternalMetricsPaths()
+	initializeInternalMetricsPaths(*internalMetricPath)
 
 	incomingMessageChannel := make(chan metricMessage, IncomingChannelSize)
 	outgoingToPoolChannel := make(chan metricMessage, PoolChannelSize)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"html/template"
 	"log"
 	"os"
 	"time"
@@ -31,7 +33,7 @@ const (
 
 var counterData [ToOutPoolOverflows + 1]int64
 var oldCounterData [ToOutPoolOverflows + 1]int64
-var counterPath [ToOutPoolOverflows + 1]string
+var counterPath []string
 
 // Enums for gauges
 type GaugeId int
@@ -45,7 +47,7 @@ const (
 )
 
 var gaugeData [StaleMetricPaths + 1]int64
-var gaugePath [StaleMetricPaths + 1]string
+var gaugePath []string
 
 var timesStatsGenerated int64
 
@@ -64,17 +66,17 @@ func generateInternalStats(incomingMessageChannel chan metricMessage) {
 		}
 
 		// Send metrics message with statistics using the graphite connection
-		writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: baseMetricsPath + counterPath[key], value: float64(metricValue), timestamp: timeStamp})
+		writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: counterPath[key], value: float64(metricValue), timestamp: timeStamp})
 		oldCounterData[key] = value
 	}
 	for key, value := range gaugeData {
 		// Send metrics message with statistics using the graphite connection
-		writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: baseMetricsPath + gaugePath[key], value: float64(value), timestamp: timeStamp})
+		writeIncomingMessage(incomingMessageChannel, metricMessage{metricPath: gaugePath[key], value: float64(value), timestamp: timeStamp})
 	}
 	timesStatsGenerated++
 }
 
-func initializeInternalMetricsPaths() {
+func initializeInternalMetricsPaths(metricPathTemplate string) {
 	// Extract hostname for naming internal hadrianus metrics
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -82,9 +84,8 @@ func initializeInternalMetricsPaths() {
 		os.Exit(1)
 		return
 	}
-	baseMetricsPath = `server.hadrianus.` + hostname + `.`
 
-	counterPath = [ToOutPoolOverflows + 1]string{
+	for _, metric := range []string{
 		`cleanupTimeMilli`,
 		`clientConnectionClosing`,
 		`clientConnectionOpening`,
@@ -102,12 +103,30 @@ func initializeInternalMetricsPaths() {
 		`sentMessage`,
 		`toOutConnectionOverflows`,
 		`toOutPoolOverflows`,
+	} {
+		counterPath = append(counterPath, renderTemplate(metricPathTemplate, TemplateData{hostname, metric}))
 	}
-	gaugePath = [StaleMetricPaths + 1]string{
+
+	for _, metric := range []string{
 		`allocatedMemoryMegabytes`,
 		`clientConnectionsActive`,
 		`encounteredMetricPaths`,
 		`goroutines`,
 		`staleMetricPaths`,
+	} {
+		gaugePath = append(gaugePath, renderTemplate(metricPathTemplate, TemplateData{hostname, metric}))
 	}
+}
+
+func renderTemplate(metricPathTemplate string, dataToTemplate TemplateData) string {
+	t, err := template.New("metricPath").Parse(metricPathTemplate)
+	if err != nil {
+		panic(err)
+	}
+	var templateOutputBuffer bytes.Buffer
+	err = t.Execute(&templateOutputBuffer, dataToTemplate)
+	if err != nil {
+		panic(err)
+	}
+	return templateOutputBuffer.String()
 }
